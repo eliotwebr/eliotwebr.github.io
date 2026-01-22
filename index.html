@@ -3,163 +3,941 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Détection de mouvement (MVP)</title>
+  <title>Guardian MVP — Mouvement + Caméra + Alarme</title>
   <style>
-    body { font-family: system-ui, Arial, sans-serif; padding: 18px; line-height: 1.4; }
-    button { font-size: 16px; padding: 12px 14px; margin-right: 10px; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; margin-top: 14px; }
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 18px; line-height: 1.4; max-width: 980px; margin: 0 auto; }
+    h1 { margin: 0 0 6px; }
     .muted { opacity: .75; }
-    .ok { color: #0a7; font-weight: 700; }
-    .warn { color: #c60; font-weight: 700; }
-    .alert { color: #c00; font-weight: 800; }
-    code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    button, select, input[type="range"], input[type="number"] { font-size: 16px; }
+    button { padding: 12px 14px; border-radius: 12px; border: 1px solid #bbb; background: transparent; cursor: pointer; }
+    button.primary { border-color: #0a7; }
+    button.danger { border-color: #c00; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 14px; }
+    @media (min-width: 880px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { border: 1px solid rgba(120,120,120,.35); border-radius: 16px; padding: 14px; background: rgba(120,120,120,.06); }
+    .ok { color: #0a7; font-weight: 800; }
+    .warn { color: #c60; font-weight: 800; }
+    .alert { color: #c00; font-weight: 900; }
+    code { background: rgba(120,120,120,.15); padding: 2px 6px; border-radius: 8px; }
+    .kv { display: grid; grid-template-columns: 160px 1fr; gap: 8px; margin-top: 10px; }
+    .kv div { padding: 6px 0; border-bottom: 1px dashed rgba(120,120,120,.25); }
+    .kv div:nth-child(odd) { opacity: .8; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid rgba(120,120,120,.35); border-radius: 999px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #888; }
+    .dot.ok { background: #0a7; }
+    .dot.warn { background: #c60; }
+    .dot.alert { background: #c00; }
+    .logs { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: pre-wrap; max-height: 240px; overflow: auto; background: rgba(0,0,0,.06); border-radius: 12px; padding: 10px; border: 1px solid rgba(120,120,120,.25); }
+    .videoWrap { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    video, canvas { width: 100%; border-radius: 14px; border: 1px solid rgba(120,120,120,.3); background: #000; }
+    .overlayAlert {
+      position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+      background: rgba(255,0,0,.20); backdrop-filter: blur(6px); z-index: 9999;
+    }
+    .overlayAlert.show { display: flex; }
+    .overlayBox {
+      width: min(680px, calc(100% - 24px));
+      border-radius: 22px;
+      border: 1px solid rgba(255,255,255,.35);
+      background: rgba(0,0,0,.55);
+      padding: 16px 16px 14px;
+      color: #fff;
+      box-shadow: 0 30px 120px rgba(0,0,0,.35);
+    }
+    .overlayBox h2 { margin: 0 0 4px; }
+    .overlayBox .muted { opacity: .8; }
   </style>
 </head>
+
 <body>
-  <h1>Détection de mouvement (Web)</h1>
+  <h1>Guardian MVP</h1>
   <p class="muted">
-    Fonctionne quand la page est ouverte au premier plan. Sur iOS, une autorisation est demandée au clic.
+    Détection via <b>capteurs</b> + <b>caméra</b> + <b>alarme</b>.
+    Fonctionne tant que la page est ouverte (pas 24/7 en web). Requiert HTTPS (ou localhost).
   </p>
 
-  <button id="toggle">Armer</button>
-  <button id="test" disabled>Test “alerte”</button>
-
-  <div class="card">
-    <div id="state" class="warn">Non armé</div>
-    <div class="muted">Niveau (lissé) : <code id="level">0.00</code></div>
-    <div class="muted">Dernière alerte : <code id="last">—</code></div>
+  <div class="row" style="margin-top:10px;">
+    <button id="btnArm" class="primary">Armer</button>
+    <button id="btnDisarm" disabled>Désarmer</button>
+    <button id="btnTestAlarm" class="danger" disabled>Test alarme</button>
+    <span class="pill" title="État global">
+      <span id="dotState" class="dot warn"></span>
+      <span id="txtState" class="warn">Non armé</span>
+    </span>
+    <span class="pill" title="Wake Lock">
+      <span id="dotWake" class="dot warn"></span>
+      <span id="txtWake" class="muted">Wake Lock: —</span>
+    </span>
   </div>
 
-  <div class="card">
-    <h3>Réglages</h3>
-    <div class="muted">
-      Seuil : <code id="thv"></code> — Durée : <code id="hmv"></code> — Cooldown : <code id="cdv"></code>
+  <div class="grid">
+    <!-- Capteurs -->
+    <div class="card">
+      <h3>1) Détection par capteurs (accéléromètre)</h3>
+      <p class="muted">Très réactif, mais dépend des appareils. iOS demande une permission au clic.</p>
+
+      <div class="row">
+        <label class="pill"><input type="checkbox" id="chkSensors" checked /> Activer</label>
+        <span class="muted">Niveau (lissé): <code id="sensorLevel">0.00</code></span>
+        <span class="muted">Dernière alerte: <code id="sensorLast">—</code></span>
+      </div>
+
+      <div class="kv">
+        <div>Seuil</div>
+        <div>
+          <input id="sensorThreshold" type="range" min="0.6" max="4.0" step="0.1" />
+          <code id="sensorThresholdV"></code>
+        </div>
+
+        <div>Durée</div>
+        <div>
+          <input id="sensorHold" type="range" min="80" max="900" step="10" />
+          <code id="sensorHoldV"></code>
+        </div>
+
+        <div>Cooldown</div>
+        <div>
+          <input id="sensorCooldown" type="range" min="500" max="12000" step="250" />
+          <code id="sensorCooldownV"></code>
+        </div>
+
+        <div>Lissage</div>
+        <div>
+          <input id="sensorAlpha" type="range" min="0.05" max="0.35" step="0.01" />
+          <code id="sensorAlphaV"></code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Caméra -->
+    <div class="card">
+      <h3>2) Détection par caméra (mouvement visuel)</h3>
+      <p class="muted">
+        Analyse d’image <b>localement</b> (pas d’upload). La caméra est <b>visible</b> et activée uniquement après clic.
+      </p>
+
+      <div class="row">
+        <button id="btnCamStart">Activer caméra</button>
+        <button id="btnCamStop" disabled>Désactiver caméra</button>
+        <label class="pill"><input type="checkbox" id="chkCamera" checked /> Activer détection</label>
+        <label class="pill"><input type="checkbox" id="chkTorch" /> Torche (si supportée)</label>
+      </div>
+
+      <div class="videoWrap" style="margin-top:10px;">
+        <video id="video" playsinline muted></video>
+        <canvas id="motionCanvas" width="160" height="120" title="Vue analytiques (différence)"></canvas>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <span class="muted">Score mouvement: <code id="camScore">0.00</code></span>
+        <span class="muted">Dernière alerte: <code id="camLast">—</code></span>
+      </div>
+
+      <div class="kv">
+        <div>Sensibilité</div>
+        <div>
+          <input id="camThreshold" type="range" min="0.6" max="12" step="0.1" />
+          <code id="camThresholdV"></code>
+        </div>
+
+        <div>FPS analyse</div>
+        <div>
+          <input id="camFps" type="range" min="3" max="20" step="1" />
+          <code id="camFpsV"></code>
+        </div>
+
+        <div>Durée</div>
+        <div>
+          <input id="camHold" type="range" min="80" max="1200" step="10" />
+          <code id="camHoldV"></code>
+        </div>
+
+        <div>Cooldown</div>
+        <div>
+          <input id="camCooldown" type="range" min="500" max="12000" step="250" />
+          <code id="camCooldownV"></code>
+        </div>
+
+        <div>Résolution analyse</div>
+        <div class="muted">
+          Fixée à <code>160×120</code> (rapide). Plus petit = plus performant.
+        </div>
+      </div>
+    </div>
+
+    <!-- Alarme -->
+    <div class="card">
+      <h3>3) Alarme & actions</h3>
+      <p class="muted">
+        Son d’alarme généré via WebAudio (fort), vibration si supportée, overlay plein écran.
+      </p>
+
+      <div class="row">
+        <label class="pill"><input type="checkbox" id="chkSound" checked /> Son</label>
+        <label class="pill"><input type="checkbox" id="chkVibrate" checked /> Vibration</label>
+        <label class="pill"><input type="checkbox" id="chkOverlay" checked /> Overlay</label>
+        <label class="pill"><input type="checkbox" id="chkLog" checked /> Log events</label>
+      </div>
+
+      <div class="kv">
+        <div>Volume</div>
+        <div>
+          <input id="alarmVolume" type="range" min="0.05" max="1.0" step="0.01" />
+          <code id="alarmVolumeV"></code>
+        </div>
+
+        <div>Durée alarme</div>
+        <div>
+          <input id="alarmDuration" type="range" min="1" max="20" step="1" />
+          <code id="alarmDurationV"></code>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="btnStopAlarm" disabled>Stop alarme</button>
+        <button id="btnExport" disabled>Exporter logs (JSON)</button>
+        <button id="btnClear" disabled>Clear logs</button>
+      </div>
+
+      <div id="logs" class="logs" style="margin-top:10px;">(logs vides)</div>
+    </div>
+
+    <!-- Infos -->
+    <div class="card">
+      <h3>4) Infos / limitations</h3>
+      <ul class="muted">
+        <li>La détection marche quand l’onglet est au premier plan.</li>
+        <li>Pour “jouer un son”, il faut un clic utilisateur (politique navigateur). Après <code>Armer</code>, c’est OK.</li>
+        <li>Caméra : nécessite autorisation explicite. Torche pas garantie selon modèle.</li>
+        <li>Si vous voulez une version “commercialisable complète” (Play Store), on wrap en Capacitor + service visible.</li>
+      </ul>
+
+      <div class="muted">Dernière alerte globale: <code id="globalLast">—</code></div>
+      <div class="muted">Source alerte: <code id="globalSource">—</code></div>
+    </div>
+  </div>
+
+  <!-- Overlay -->
+  <div id="overlay" class="overlayAlert">
+    <div class="overlayBox">
+      <h2>🚨 Intrusion détectée</h2>
+      <div class="muted">Source: <code id="ovSource">—</code> · Intensité: <code id="ovValue">—</code> · <code id="ovTime">—</code></div>
+      <div class="row" style="margin-top:12px;">
+        <button id="ovStop" class="danger">Stop alarme</button>
+        <button id="ovDisarm">Désarmer</button>
+      </div>
+      <p class="muted" style="margin:10px 0 0;">
+        L’alarme et la caméra restent visibles et contrôlables (anti-abus).
+      </p>
     </div>
   </div>
 
   <script>
-    // ========= Réglages =========
-    const THRESHOLD = 1.8;     // sensibilité (m/s² au-dessus du repos)
-    const HOLD_MS = 250;       // doit rester au-dessus du seuil pendant X ms
-    const COOLDOWN_MS = 3000;  // pas plus d'une alerte toutes les X ms
-    const ALPHA = 0.2;         // lissage (0.1 à 0.3)
+    /********************
+     * Storage helpers
+     ********************/
+    const SKEY = "guardian_mvp_settings_v1";
+    const defaultSettings = {
+      sensorsEnabled: true,
+      sensorThreshold: 1.8,
+      sensorHold: 250,
+      sensorCooldown: 3000,
+      sensorAlpha: 0.2,
 
-    // ========= Etat =========
+      cameraEnabled: true,
+      camThreshold: 3.2,     // score (0..~12) — dépend des devices
+      camFps: 10,
+      camHold: 220,
+      camCooldown: 3500,
+
+      sound: true,
+      vibrate: true,
+      overlay: true,
+      log: true,
+      alarmVolume: 0.75,
+      alarmDuration: 8
+    };
+
+    function loadSettings() {
+      try {
+        const raw = localStorage.getItem(SKEY);
+        if (!raw) return { ...defaultSettings };
+        const obj = JSON.parse(raw);
+        return { ...defaultSettings, ...obj };
+      } catch {
+        return { ...defaultSettings };
+      }
+    }
+    function saveSettings() {
+      localStorage.setItem(SKEY, JSON.stringify(settings));
+    }
+
+    /********************
+     * UI refs
+     ********************/
+    const btnArm = document.getElementById("btnArm");
+    const btnDisarm = document.getElementById("btnDisarm");
+    const btnTestAlarm = document.getElementById("btnTestAlarm");
+
+    const dotState = document.getElementById("dotState");
+    const txtState = document.getElementById("txtState");
+
+    const dotWake = document.getElementById("dotWake");
+    const txtWake = document.getElementById("txtWake");
+
+    const chkSensors = document.getElementById("chkSensors");
+    const sensorLevelEl = document.getElementById("sensorLevel");
+    const sensorLastEl = document.getElementById("sensorLast");
+
+    const sensorThreshold = document.getElementById("sensorThreshold");
+    const sensorHold = document.getElementById("sensorHold");
+    const sensorCooldown = document.getElementById("sensorCooldown");
+    const sensorAlpha = document.getElementById("sensorAlpha");
+
+    const sensorThresholdV = document.getElementById("sensorThresholdV");
+    const sensorHoldV = document.getElementById("sensorHoldV");
+    const sensorCooldownV = document.getElementById("sensorCooldownV");
+    const sensorAlphaV = document.getElementById("sensorAlphaV");
+
+    const btnCamStart = document.getElementById("btnCamStart");
+    const btnCamStop = document.getElementById("btnCamStop");
+    const chkCamera = document.getElementById("chkCamera");
+    const chkTorch = document.getElementById("chkTorch");
+    const video = document.getElementById("video");
+    const motionCanvas = document.getElementById("motionCanvas");
+    const camScoreEl = document.getElementById("camScore");
+    const camLastEl = document.getElementById("camLast");
+
+    const camThreshold = document.getElementById("camThreshold");
+    const camFps = document.getElementById("camFps");
+    const camHold = document.getElementById("camHold");
+    const camCooldown = document.getElementById("camCooldown");
+    const camThresholdV = document.getElementById("camThresholdV");
+    const camFpsV = document.getElementById("camFpsV");
+    const camHoldV = document.getElementById("camHoldV");
+    const camCooldownV = document.getElementById("camCooldownV");
+
+    const chkSound = document.getElementById("chkSound");
+    const chkVibrate = document.getElementById("chkVibrate");
+    const chkOverlay = document.getElementById("chkOverlay");
+    const chkLog = document.getElementById("chkLog");
+    const alarmVolume = document.getElementById("alarmVolume");
+    const alarmDuration = document.getElementById("alarmDuration");
+    const alarmVolumeV = document.getElementById("alarmVolumeV");
+    const alarmDurationV = document.getElementById("alarmDurationV");
+    const btnStopAlarm = document.getElementById("btnStopAlarm");
+    const btnExport = document.getElementById("btnExport");
+    const btnClear = document.getElementById("btnClear");
+    const logsEl = document.getElementById("logs");
+
+    const globalLastEl = document.getElementById("globalLast");
+    const globalSourceEl = document.getElementById("globalSource");
+
+    const overlay = document.getElementById("overlay");
+    const ovSource = document.getElementById("ovSource");
+    const ovValue = document.getElementById("ovValue");
+    const ovTime = document.getElementById("ovTime");
+    const ovStop = document.getElementById("ovStop");
+    const ovDisarm = document.getElementById("ovDisarm");
+
+    /********************
+     * Global state
+     ********************/
+    let settings = loadSettings();
     let armed = false;
-    let lastTrigger = 0;
-    let aboveSince = null;
-    let smoothed = 0;
 
-    // ========= UI =========
-    const btnToggle = document.getElementById("toggle");
-    const btnTest = document.getElementById("test");
-    const elState = document.getElementById("state");
-    const elLevel = document.getElementById("level");
-    const elLast = document.getElementById("last");
-    document.getElementById("thv").textContent = THRESHOLD;
-    document.getElementById("hmv").textContent = HOLD_MS + "ms";
-    document.getElementById("cdv").textContent = COOLDOWN_MS + "ms";
+    // Sensors state
+    let sensorLastTrigger = 0;
+    let sensorAboveSince = null;
+    let sensorSmoothed = 0;
 
-    function fmtTime(ts) {
-      const d = new Date(ts);
-      return d.toLocaleTimeString();
+    // Camera state
+    let camStream = null;
+    let camTrack = null;
+    let camTimer = null;
+    let camLastTrigger = 0;
+    let camAboveSince = null;
+    let prevFrame = null; // Uint8ClampedArray grayscale
+    const mctx = motionCanvas.getContext("2d", { willReadFrequently: true });
+
+    // Alarm state
+    let audioCtx = null;
+    let alarmNodes = null; // {osc1, osc2, gain, intervalId, stopAt}
+    let wakeLock = null;
+
+    // Logs
+    const logs = [];
+
+    /********************
+     * Helpers
+     ********************/
+    function nowStr() {
+      return new Date().toLocaleString();
+    }
+    function timeStr(ts) {
+      return new Date(ts).toLocaleTimeString();
+    }
+    function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+
+    function setGlobalState(kind, text) {
+      txtState.className = kind;
+      txtState.textContent = text;
+      dotState.className = `dot ${kind}`;
+    }
+
+    function logEvent(type, payload) {
+      if (!settings.log) return;
+      const entry = { ts: Date.now(), time: nowStr(), type, ...payload };
+      logs.unshift(entry);
+      renderLogs();
+    }
+
+    function renderLogs() {
+      btnExport.disabled = logs.length === 0;
+      btnClear.disabled = logs.length === 0;
+      if (logs.length === 0) {
+        logsEl.textContent = "(logs vides)";
+        return;
+      }
+      logsEl.textContent = logs.slice(0, 60).map(e => {
+        const extras = Object.entries(e)
+          .filter(([k]) => !["ts","time","type"].includes(k))
+          .map(([k,v]) => `${k}=${typeof v === "number" ? v.toFixed?.(2) ?? v : v}`)
+          .join(" ");
+        return `[${e.time}] ${e.type}${extras ? " — " + extras : ""}`;
+      }).join("\n");
     }
 
     async function requestMotionPermissionIfNeeded() {
       // iOS 13+ : permission requise, uniquement au clic utilisateur
-      if (typeof DeviceMotionEvent !== "undefined" &&
-          typeof DeviceMotionEvent.requestPermission === "function") {
+      if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
         const res = await DeviceMotionEvent.requestPermission();
         if (res !== "granted") throw new Error("Permission capteurs refusée");
       }
     }
 
-    function triggerAlert(intensity) {
-      const now = Date.now();
-      elState.className = "alert";
-      elState.textContent = `🚨 Mouvement suspect détecté (intensité ~ ${intensity.toFixed(2)})`;
-      elLast.textContent = fmtTime(now);
-
-      // Exemple: ici vous pouvez envoyer au backend
-      // fetch("/api/security/motion", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ intensity, ts: now }) });
-
-      // Revenir en état armé au bout d'un moment
-      setTimeout(() => {
-        if (armed) {
-          elState.className = "ok";
-          elState.textContent = "Armé ✅ (surveillance active)";
-        }
-      }, 1200);
+    async function ensureAudioContext() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state !== "running") {
+        await audioCtx.resume();
+      }
     }
 
-    function onMotion(e) {
-      if (!armed) return;
+    function showOverlay(source, value, ts) {
+      if (!settings.overlay) return;
+      ovSource.textContent = source;
+      ovValue.textContent = typeof value === "number" ? value.toFixed(2) : String(value);
+      ovTime.textContent = timeStr(ts);
+      overlay.classList.add("show");
+    }
+    function hideOverlay() {
+      overlay.classList.remove("show");
+    }
+
+    async function acquireWakeLock() {
+      try {
+        if (!("wakeLock" in navigator) || !navigator.wakeLock) {
+          txtWake.textContent = "Wake Lock: non supporté";
+          dotWake.className = "dot warn";
+          return;
+        }
+        wakeLock = await navigator.wakeLock.request("screen");
+        txtWake.textContent = "Wake Lock: actif";
+        dotWake.className = "dot ok";
+
+        wakeLock.addEventListener("release", () => {
+          txtWake.textContent = "Wake Lock: relâché";
+          dotWake.className = "dot warn";
+        });
+      } catch (e) {
+        txtWake.textContent = "Wake Lock: refusé";
+        dotWake.className = "dot warn";
+      }
+    }
+    async function releaseWakeLock() {
+      try {
+        if (wakeLock) await wakeLock.release();
+      } catch {}
+      wakeLock = null;
+      txtWake.textContent = "Wake Lock: —";
+      dotWake.className = "dot warn";
+    }
+
+    /********************
+     * Alarm
+     ********************/
+    function vibratePattern() {
+      if (!settings.vibrate) return;
+      if (!("vibrate" in navigator)) return;
+      // pattern court et fort
+      navigator.vibrate([200, 80, 200, 80, 450]);
+    }
+
+    async function startAlarm(source, intensity) {
+      const ts = Date.now();
+      globalLastEl.textContent = timeStr(ts);
+      globalSourceEl.textContent = source;
+      showOverlay(source, intensity, ts);
+
+      logEvent("ALERT", { source, intensity });
+
+      btnStopAlarm.disabled = false;
+
+      if (settings.sound) {
+        await ensureAudioContext();
+
+        // Alarme "siren" (oscillateurs + modulation)
+        const gain = audioCtx.createGain();
+        gain.gain.value = 0;
+
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        osc1.type = "sawtooth";
+        osc2.type = "square";
+
+        // fréquences de base
+        osc1.frequency.value = 750;
+        osc2.frequency.value = 920;
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc1.start();
+        osc2.start();
+
+        // montée rapide + pulsation (sirène)
+        const vol = clamp(settings.alarmVolume, 0.05, 1.0);
+        const now = audioCtx.currentTime;
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(vol, now + 0.08);
+
+        let up = true;
+        const intervalId = setInterval(() => {
+          if (!audioCtx) return;
+          const t = audioCtx.currentTime;
+          // balayage fréquence
+          const f1 = up ? 1050 : 650;
+          const f2 = up ? 1250 : 780;
+          osc1.frequency.setTargetAtTime(f1, t, 0.05);
+          osc2.frequency.setTargetAtTime(f2, t, 0.05);
+          up = !up;
+        }, 220);
+
+        alarmNodes = { osc1, osc2, gain, intervalId };
+
+        // stop auto
+        const stopAfterMs = Math.round(settings.alarmDuration * 1000);
+        setTimeout(() => stopAlarm(), stopAfterMs);
+      }
+
+      vibratePattern();
+    }
+
+    function stopAlarm() {
+      hideOverlay();
+      btnStopAlarm.disabled = true;
+
+      if (alarmNodes && audioCtx) {
+        try {
+          clearInterval(alarmNodes.intervalId);
+          const now = audioCtx.currentTime;
+          alarmNodes.gain.gain.cancelScheduledValues(now);
+          alarmNodes.gain.gain.setValueAtTime(alarmNodes.gain.gain.value || 0.1, now);
+          alarmNodes.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+
+          setTimeout(() => {
+            try { alarmNodes.osc1.stop(); } catch {}
+            try { alarmNodes.osc2.stop(); } catch {}
+          }, 160);
+        } catch {}
+      }
+      alarmNodes = null;
+    }
+
+    /********************
+     * Sensors detection
+     ********************/
+    function onDeviceMotion(e) {
+      if (!armed || !settings.sensorsEnabled || !chkSensors.checked) return;
 
       const acc = e.accelerationIncludingGravity || e.acceleration;
       if (!acc) return;
 
       const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
-
-      // Magnitude (avec gravity ≈ 9.81 au repos)
       const mag = Math.sqrt(x*x + y*y + z*z);
+
+      // repos ~ 9.81 quand gravity incluse
       const delta = Math.abs(mag - 9.81);
 
-      // Lissage
-      smoothed = (1 - ALPHA) * smoothed + ALPHA * delta;
-      elLevel.textContent = smoothed.toFixed(2);
+      const alpha = settings.sensorAlpha;
+      sensorSmoothed = (1 - alpha) * sensorSmoothed + alpha * delta;
 
-      const now = Date.now();
+      sensorLevelEl.textContent = sensorSmoothed.toFixed(2);
 
-      if (smoothed > THRESHOLD) {
-        if (aboveSince === null) aboveSince = now;
+      const ts = Date.now();
+      const thr = settings.sensorThreshold;
 
-        if ((now - aboveSince) >= HOLD_MS && (now - lastTrigger) > COOLDOWN_MS) {
-          lastTrigger = now;
-          aboveSince = null;
-          triggerAlert(smoothed);
+      if (sensorSmoothed > thr) {
+        if (sensorAboveSince === null) sensorAboveSince = ts;
+
+        const held = ts - sensorAboveSince;
+        if (held >= settings.sensorHold && (ts - sensorLastTrigger) > settings.sensorCooldown) {
+          sensorLastTrigger = ts;
+          sensorAboveSince = null;
+
+          sensorLastEl.textContent = timeStr(ts);
+          startAlarm("SENSORS", sensorSmoothed);
         }
       } else {
-        aboveSince = null;
-        elState.className = "ok";
-        elState.textContent = "Armé ✅ (surveillance active)";
+        sensorAboveSince = null;
       }
     }
 
+    /********************
+     * Camera motion detection (frame differencing)
+     ********************/
+    async function startCamera() {
+      if (camStream) return;
+
+      // getUserMedia requiert HTTPS/localhost
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "environment",
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+
+      camStream = stream;
+      video.srcObject = stream;
+      await video.play();
+
+      camTrack = stream.getVideoTracks()[0] || null;
+
+      btnCamStart.disabled = true;
+      btnCamStop.disabled = false;
+
+      logEvent("CAMERA_ON", {});
+
+      // init prev frame buffer
+      prevFrame = null;
+
+      // start analysis loop
+      scheduleCameraLoop();
+    }
+
+    function stopCamera() {
+      stopTorch();
+      if (camTimer) clearInterval(camTimer);
+      camTimer = null;
+
+      if (camStream) {
+        camStream.getTracks().forEach(t => t.stop());
+      }
+      camStream = null;
+      camTrack = null;
+      video.srcObject = null;
+      prevFrame = null;
+
+      btnCamStart.disabled = false;
+      btnCamStop.disabled = true;
+
+      camScoreEl.textContent = "0.00";
+      camAboveSince = null;
+
+      logEvent("CAMERA_OFF", {});
+    }
+
+    async function setTorch(on) {
+      if (!camTrack) return;
+      try {
+        const caps = camTrack.getCapabilities?.();
+        if (!caps || !caps.torch) throw new Error("Torche non supportée");
+        await camTrack.applyConstraints({ advanced: [{ torch: !!on }] });
+      } catch (e) {
+        chkTorch.checked = false;
+      }
+    }
+    function stopTorch() {
+      if (chkTorch.checked) {
+        chkTorch.checked = false;
+      }
+      // best effort
+      setTorch(false).catch(() => {});
+    }
+
+    function scheduleCameraLoop() {
+      if (!camStream) return;
+      if (camTimer) clearInterval(camTimer);
+
+      const fps = settings.camFps;
+      const interval = Math.round(1000 / fps);
+
+      camTimer = setInterval(() => {
+        try { analyzeCameraFrame(); } catch {}
+      }, interval);
+    }
+
+    function analyzeCameraFrame() {
+      if (!armed || !settings.cameraEnabled || !chkCamera.checked) return;
+      if (!camStream || video.readyState < 2) return;
+
+      // draw downscaled frame to canvas
+      const w = motionCanvas.width, h = motionCanvas.height;
+      mctx.drawImage(video, 0, 0, w, h);
+
+      const img = mctx.getImageData(0, 0, w, h);
+      const data = img.data;
+
+      // convert to grayscale buffer
+      const gray = new Uint8ClampedArray(w * h);
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        // luminance approx
+        gray[p] = (data[i] * 0.2126 + data[i+1] * 0.7152 + data[i+2] * 0.0722) | 0;
+      }
+
+      if (!prevFrame) {
+        prevFrame = gray;
+        return;
+      }
+
+      // compute mean absolute difference
+      let sum = 0;
+      for (let i = 0; i < gray.length; i++) {
+        sum += Math.abs(gray[i] - prevFrame[i]);
+      }
+      const meanDiff = sum / gray.length; // 0..255 (usually low)
+      prevFrame = gray;
+
+      // Normalize to a more readable scale
+      const score = meanDiff / 3.0; // ~0..12 typical (selon lumière)
+      camScoreEl.textContent = score.toFixed(2);
+
+      // render diff visualization (optional)
+      // We reuse image data to show difference intensity
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        const v = Math.min(255, Math.abs(gray[p] - prevFrame[p]) * 6);
+        data[i] = v; data[i+1] = v; data[i+2] = v; data[i+3] = 255;
+      }
+      // Note: above uses prevFrame already updated; the visualization is "approx"
+      mctx.putImageData(img, 0, 0);
+
+      const ts = Date.now();
+      const thr = settings.camThreshold;
+
+      if (score > thr) {
+        if (camAboveSince === null) camAboveSince = ts;
+        const held = ts - camAboveSince;
+
+        if (held >= settings.camHold && (ts - camLastTrigger) > settings.camCooldown) {
+          camLastTrigger = ts;
+          camAboveSince = null;
+
+          camLastEl.textContent = timeStr(ts);
+          startAlarm("CAMERA", score);
+        }
+      } else {
+        camAboveSince = null;
+      }
+    }
+
+    /********************
+     * Arm / Disarm
+     ********************/
     async function arm() {
+      // user gesture path: request motion permission + init audio context early
       await requestMotionPermissionIfNeeded();
-      window.addEventListener("devicemotion", onMotion, { passive: true });
+      await ensureAudioContext();
+
+      window.addEventListener("devicemotion", onDeviceMotion, { passive: true });
+
       armed = true;
-      btnToggle.textContent = "Désarmer";
-      btnTest.disabled = false;
-      elState.className = "ok";
-      elState.textContent = "Armé ✅ (bougez le téléphone pour tester)";
+      setGlobalState("ok", "Armé ✅");
+      btnArm.disabled = true;
+      btnDisarm.disabled = false;
+      btnTestAlarm.disabled = false;
+
+      btnExport.disabled = logs.length === 0;
+      btnClear.disabled = logs.length === 0;
+
+      logEvent("ARM", {});
+
+      await acquireWakeLock();
     }
 
     function disarm() {
-      window.removeEventListener("devicemotion", onMotion);
+      stopAlarm();
+      window.removeEventListener("devicemotion", onDeviceMotion);
+
       armed = false;
-      btnToggle.textContent = "Armer";
-      btnTest.disabled = true;
-      elState.className = "warn";
-      elState.textContent = "Non armé";
-      elLevel.textContent = "0.00";
-      aboveSince = null;
-      smoothed = 0;
+      setGlobalState("warn", "Non armé");
+      btnArm.disabled = false;
+      btnDisarm.disabled = true;
+      btnTestAlarm.disabled = true;
+
+      logEvent("DISARM", {});
+
+      releaseWakeLock();
     }
 
-    btnToggle.addEventListener("click", async () => {
+    /********************
+     * Bind settings to UI
+     ********************/
+    function syncUIFromSettings() {
+      chkSensors.checked = settings.sensorsEnabled;
+      sensorThreshold.value = settings.sensorThreshold;
+      sensorHold.value = settings.sensorHold;
+      sensorCooldown.value = settings.sensorCooldown;
+      sensorAlpha.value = settings.sensorAlpha;
+
+      chkCamera.checked = settings.cameraEnabled;
+      camThreshold.value = settings.camThreshold;
+      camFps.value = settings.camFps;
+      camHold.value = settings.camHold;
+      camCooldown.value = settings.camCooldown;
+
+      chkSound.checked = settings.sound;
+      chkVibrate.checked = settings.vibrate;
+      chkOverlay.checked = settings.overlay;
+      chkLog.checked = settings.log;
+
+      alarmVolume.value = settings.alarmVolume;
+      alarmDuration.value = settings.alarmDuration;
+
+      sensorThresholdV.textContent = Number(settings.sensorThreshold).toFixed(1);
+      sensorHoldV.textContent = settings.sensorHold + "ms";
+      sensorCooldownV.textContent = settings.sensorCooldown + "ms";
+      sensorAlphaV.textContent = Number(settings.sensorAlpha).toFixed(2);
+
+      camThresholdV.textContent = Number(settings.camThreshold).toFixed(1);
+      camFpsV.textContent = settings.camFps + " fps";
+      camHoldV.textContent = settings.camHold + "ms";
+      camCooldownV.textContent = settings.camCooldown + "ms";
+
+      alarmVolumeV.textContent = Number(settings.alarmVolume).toFixed(2);
+      alarmDurationV.textContent = settings.alarmDuration + "s";
+    }
+
+    function bindRange(idEl, key, fmtFn, onAfter) {
+      idEl.addEventListener("input", () => {
+        settings[key] = (idEl.type === "range" || idEl.type === "number") ? Number(idEl.value) : idEl.value;
+        saveSettings();
+        fmtFn?.();
+        onAfter?.();
+      });
+    }
+
+    /********************
+     * Events
+     ********************/
+    btnArm.addEventListener("click", async () => {
+      try { await arm(); }
+      catch (e) {
+        setGlobalState("alert", "Erreur permissions");
+        logEvent("ERROR", { msg: e?.message || String(e) });
+        alert("Impossible d'armer: " + (e?.message || e));
+      }
+    });
+    btnDisarm.addEventListener("click", () => disarm());
+
+    btnTestAlarm.addEventListener("click", () => {
+      if (!armed) return;
+      startAlarm("TEST", 9.99);
+    });
+
+    btnStopAlarm.addEventListener("click", () => stopAlarm());
+
+    ovStop.addEventListener("click", () => stopAlarm());
+    ovDisarm.addEventListener("click", () => { stopAlarm(); disarm(); });
+
+    btnCamStart.addEventListener("click", async () => {
       try {
-        if (!armed) await arm();
-        else disarm();
-      } catch (err) {
-        elState.className = "alert";
-        elState.textContent = "❌ " + err.message;
+        await startCamera();
+        if (chkTorch.checked) await setTorch(true);
+      } catch (e) {
+        logEvent("CAMERA_ERROR", { msg: e?.message || String(e) });
+        alert("Caméra impossible: " + (e?.message || e));
       }
     });
 
-    btnTest.addEventListener("click", () => {
-      if (!armed) return;
-      triggerAlert(smoothed || 2.0);
+    btnCamStop.addEventListener("click", () => stopCamera());
+
+    chkTorch.addEventListener("change", async () => {
+      if (!camStream) { chkTorch.checked = false; return; }
+      await setTorch(chkTorch.checked);
+      logEvent("TORCH", { on: chkTorch.checked });
+    });
+
+    chkSensors.addEventListener("change", () => {
+      settings.sensorsEnabled = chkSensors.checked;
+      saveSettings();
+    });
+
+    chkCamera.addEventListener("change", () => {
+      settings.cameraEnabled = chkCamera.checked;
+      saveSettings();
+    });
+
+    chkSound.addEventListener("change", () => { settings.sound = chkSound.checked; saveSettings(); });
+    chkVibrate.addEventListener("change", () => { settings.vibrate = chkVibrate.checked; saveSettings(); });
+    chkOverlay.addEventListener("change", () => { settings.overlay = chkOverlay.checked; saveSettings(); });
+    chkLog.addEventListener("change", () => { settings.log = chkLog.checked; saveSettings(); renderLogs(); });
+
+    bindRange(sensorThreshold, "sensorThreshold", () => sensorThresholdV.textContent = Number(sensorThreshold.value).toFixed(1));
+    bindRange(sensorHold, "sensorHold", () => sensorHoldV.textContent = sensorHold.value + "ms");
+    bindRange(sensorCooldown, "sensorCooldown", () => sensorCooldownV.textContent = sensorCooldown.value + "ms");
+    bindRange(sensorAlpha, "sensorAlpha", () => sensorAlphaV.textContent = Number(sensorAlpha.value).toFixed(2));
+
+    bindRange(camThreshold, "camThreshold", () => camThresholdV.textContent = Number(camThreshold.value).toFixed(1));
+    bindRange(camFps, "camFps", () => camFpsV.textContent = camFps.value + " fps", () => scheduleCameraLoop());
+    bindRange(camHold, "camHold", () => camHoldV.textContent = camHold.value + "ms");
+    bindRange(camCooldown, "camCooldown", () => camCooldownV.textContent = camCooldown.value + "ms");
+
+    bindRange(alarmVolume, "alarmVolume", () => alarmVolumeV.textContent = Number(alarmVolume.value).toFixed(2));
+    bindRange(alarmDuration, "alarmDuration", () => alarmDurationV.textContent = alarmDuration.value + "s");
+
+    btnExport.addEventListener("click", () => {
+      const blob = new Blob([JSON.stringify(logs, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "guardian_logs.json";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 500);
+    });
+
+    btnClear.addEventListener("click", () => {
+      logs.length = 0;
+      renderLogs();
+      logEvent("LOGS_CLEARED", {});
+    });
+
+    // Pause overlay if user taps outside box
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) hideOverlay();
+    });
+
+    // Restore settings
+    syncUIFromSettings();
+    renderLogs();
+
+    // If page visibility changes, we inform logs (useful)
+    document.addEventListener("visibilitychange", () => {
+      logEvent("VISIBILITY", { state: document.visibilityState });
+    });
+
+    // Safety: if page is about to unload, stop camera
+    window.addEventListener("beforeunload", () => {
+      try { stopCamera(); } catch {}
+      try { stopAlarm(); } catch {}
     });
   </script>
 </body>
