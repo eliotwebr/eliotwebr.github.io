@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Détection de mouvement (MVP)</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; padding: 18px; line-height: 1.4; }
+    button { font-size: 16px; padding: 12px 14px; margin-right: 10px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 14px; margin-top: 14px; }
+    .muted { opacity: .75; }
+    .ok { color: #0a7; font-weight: 700; }
+    .warn { color: #c60; font-weight: 700; }
+    .alert { color: #c00; font-weight: 800; }
+    code { background: #f6f6f6; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Détection de mouvement (Web)</h1>
+  <p class="muted">
+    Fonctionne quand la page est ouverte au premier plan. Sur iOS, une autorisation est demandée au clic.
+  </p>
+
+  <button id="toggle">Armer</button>
+  <button id="test" disabled>Test “alerte”</button>
+
+  <div class="card">
+    <div id="state" class="warn">Non armé</div>
+    <div class="muted">Niveau (lissé) : <code id="level">0.00</code></div>
+    <div class="muted">Dernière alerte : <code id="last">—</code></div>
+  </div>
+
+  <div class="card">
+    <h3>Réglages</h3>
+    <div class="muted">
+      Seuil : <code id="thv"></code> — Durée : <code id="hmv"></code> — Cooldown : <code id="cdv"></code>
+    </div>
+  </div>
+
+  <script>
+    // ========= Réglages =========
+    const THRESHOLD = 1.8;     // sensibilité (m/s² au-dessus du repos)
+    const HOLD_MS = 250;       // doit rester au-dessus du seuil pendant X ms
+    const COOLDOWN_MS = 3000;  // pas plus d'une alerte toutes les X ms
+    const ALPHA = 0.2;         // lissage (0.1 à 0.3)
+
+    // ========= Etat =========
+    let armed = false;
+    let lastTrigger = 0;
+    let aboveSince = null;
+    let smoothed = 0;
+
+    // ========= UI =========
+    const btnToggle = document.getElementById("toggle");
+    const btnTest = document.getElementById("test");
+    const elState = document.getElementById("state");
+    const elLevel = document.getElementById("level");
+    const elLast = document.getElementById("last");
+    document.getElementById("thv").textContent = THRESHOLD;
+    document.getElementById("hmv").textContent = HOLD_MS + "ms";
+    document.getElementById("cdv").textContent = COOLDOWN_MS + "ms";
+
+    function fmtTime(ts) {
+      const d = new Date(ts);
+      return d.toLocaleTimeString();
+    }
+
+    async function requestMotionPermissionIfNeeded() {
+      // iOS 13+ : permission requise, uniquement au clic utilisateur
+      if (typeof DeviceMotionEvent !== "undefined" &&
+          typeof DeviceMotionEvent.requestPermission === "function") {
+        const res = await DeviceMotionEvent.requestPermission();
+        if (res !== "granted") throw new Error("Permission capteurs refusée");
+      }
+    }
+
+    function triggerAlert(intensity) {
+      const now = Date.now();
+      elState.className = "alert";
+      elState.textContent = `🚨 Mouvement suspect détecté (intensité ~ ${intensity.toFixed(2)})`;
+      elLast.textContent = fmtTime(now);
+
+      // Exemple: ici vous pouvez envoyer au backend
+      // fetch("/api/security/motion", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ intensity, ts: now }) });
+
+      // Revenir en état armé au bout d'un moment
+      setTimeout(() => {
+        if (armed) {
+          elState.className = "ok";
+          elState.textContent = "Armé ✅ (surveillance active)";
+        }
+      }, 1200);
+    }
+
+    function onMotion(e) {
+      if (!armed) return;
+
+      const acc = e.accelerationIncludingGravity || e.acceleration;
+      if (!acc) return;
+
+      const x = acc.x || 0, y = acc.y || 0, z = acc.z || 0;
+
+      // Magnitude (avec gravity ≈ 9.81 au repos)
+      const mag = Math.sqrt(x*x + y*y + z*z);
+      const delta = Math.abs(mag - 9.81);
+
+      // Lissage
+      smoothed = (1 - ALPHA) * smoothed + ALPHA * delta;
+      elLevel.textContent = smoothed.toFixed(2);
+
+      const now = Date.now();
+
+      if (smoothed > THRESHOLD) {
+        if (aboveSince === null) aboveSince = now;
+
+        if ((now - aboveSince) >= HOLD_MS && (now - lastTrigger) > COOLDOWN_MS) {
+          lastTrigger = now;
+          aboveSince = null;
+          triggerAlert(smoothed);
+        }
+      } else {
+        aboveSince = null;
+        elState.className = "ok";
+        elState.textContent = "Armé ✅ (surveillance active)";
+      }
+    }
+
+    async function arm() {
+      await requestMotionPermissionIfNeeded();
+      window.addEventListener("devicemotion", onMotion, { passive: true });
+      armed = true;
+      btnToggle.textContent = "Désarmer";
+      btnTest.disabled = false;
+      elState.className = "ok";
+      elState.textContent = "Armé ✅ (bougez le téléphone pour tester)";
+    }
+
+    function disarm() {
+      window.removeEventListener("devicemotion", onMotion);
+      armed = false;
+      btnToggle.textContent = "Armer";
+      btnTest.disabled = true;
+      elState.className = "warn";
+      elState.textContent = "Non armé";
+      elLevel.textContent = "0.00";
+      aboveSince = null;
+      smoothed = 0;
+    }
+
+    btnToggle.addEventListener("click", async () => {
+      try {
+        if (!armed) await arm();
+        else disarm();
+      } catch (err) {
+        elState.className = "alert";
+        elState.textContent = "❌ " + err.message;
+      }
+    });
+
+    btnTest.addEventListener("click", () => {
+      if (!armed) return;
+      triggerAlert(smoothed || 2.0);
+    });
+  </script>
+</body>
+</html>
